@@ -7,9 +7,14 @@ defmodule DataStore.Application do
 
   @impl true
   def start(_type, _args) do
+    postgres_config =
+      Application.get_env(:data_store, :postgres)
+      |> Map.to_list()
+      |> Keyword.put(:name, :postgres)
+
     children = [
-      # Starts a worker by calling: DataStore.Worker.start_link(arg)
-      # {DataStore.Worker, arg}
+      {Postgrex, postgres_config},
+      DataStore.Mqtt.child_spec([]),
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
@@ -18,3 +23,5 @@ defmodule DataStore.Application do
     Supervisor.start_link(children, opts)
   end
 end
+
+# Postgrex.query!(:postgres, sql, [])
