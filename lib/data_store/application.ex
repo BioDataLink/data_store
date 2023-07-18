@@ -7,14 +7,9 @@ defmodule DataStore.Application do
 
   @impl true
   def start(_type, _args) do
-    postgres_config =
-      Application.get_env(:data_store, :postgres)
-      |> Map.to_list()
-      |> Keyword.put(:name, :postgres)
-
     children = [
-      {Postgrex, postgres_config},
-      DataStore.Mqtt.child_spec([]),
+      {Postgrex, DataStore.Db.get_postgres_config()},
+      {Tortoise.Connection, DataStore.Mqtt.get_tortoise_config()}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

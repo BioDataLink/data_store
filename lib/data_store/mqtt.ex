@@ -1,23 +1,21 @@
 defmodule DataStore.Mqtt do
   def get_mqtt_config(), do: Application.get_env(:data_store, :mqtt)
 
-  # Devuelve una configuración de child para un cliente mqtt, en el formato que
-  # que espera un Supervisor
-  # De momento no usamos las opciones, las tomamos deirectamente
-  def child_spec(_) do
+  def get_tortoise_config() do
     config = get_mqtt_config()
 
-    {Tortoise.Connection,
-     client_id: config.client_id,
-     server: {Tortoise.Transport.Tcp, host: config.host, port: config.port},
-     handler: {__MODULE__, []},
-     subscriptions: [{"metrics/#", 0}]}
+    [
+      client_id: config.client_id,
+      server: {Tortoise.Transport.Tcp, host: config.host, port: config.port},
+      handler: {__MODULE__, []},
+      subscriptions: [{"metrics/#", 1}]
+    ]
   end
 
   # Opción de arranque a mano (para pruebas)
   def start_link() do
-    {_, args} = child_spec([])
-    Tortoise.Connection.start_link(args)
+    tortoise_config = get_tortoise_config()
+    Tortoise.Connection.start_link(tortoise_config)
   end
 
   # Envía payload (serializado en JSON) al topic formado por
@@ -25,16 +23,15 @@ defmodule DataStore.Mqtt do
   # Lo hacemos así para poder suscribirnos a "header" si queremos todo (header/#)
   # o a header/client_id para un cliente en concreto
 
-  def send_data(header, payload) do
+  def send_data(topic, payload) do
     config = get_mqtt_config()
     client_id = config.client_id
-    topic = "#{header}/#{client_id}"
     payload = Jason.encode!(payload)
-    Tortoise.publish(client_id, topic, payload)
+    Tortoise.publish(client_id, topic, payload, [{:qos, 1}])
   end
 
   # ya no nos vamos a suscribir usando esta función, porque al arrancar
-  # ya nos suscribe a weather/#
+  # ya nos suscribe a metricd/#
   # pero podríamos usarla para suscribirnos a otro topic
 
   def subscribe(topic) do
@@ -61,7 +58,8 @@ defmodule DataStore.Mqtt do
   # topic_levels es un array de strings. Para el topic "a/b/c", sería ["a", "b", "c"]
   # payload viene binario, pero sabemos que contien un JSON que convertimos de vuelta a un mapa elixir
   def handle_message(["metrics", client_id], payload, state) do
-    spawn(fn -> save(client_id, payload) end)
+    IO.puts("SAVE")
+    save(client_id, payload)
     {:ok, state}
   end
 
@@ -72,46 +70,18 @@ defmodule DataStore.Mqtt do
   end
 
   def save(client_id, payload) do
-    %{"metrics" => metrics, "timestamp" => timestamp} = Jason.decode!(payload)
+    %{"metrics" => metrics} = Jason.decode!(payload)
 
-    # data =
-    #   Enum.reduce(metrics, [], fn {device, device_metrics}, acc ->
-    #     Enum.reduce(device_metrics, acc, fn {type, value}, acc2 ->
-    #       [
-    #         %{
-    #           terminal: client_id,
-    #           timestamp: timestamp,
-    #           device: device,
-    #           type: type,
-    #           value: value
-    #         }
-    #         | acc2
-    #       ]
-    #     end)
-    #   end)
+    for %{"device" => device, "class" => class, "time" => time, "read" => read} <- metrics do
+      metric = %{
+        terminal: client_id,
+        timestamp: time,
+        device: device,
+        type: class,
+        value: read
+      }
 
-    for {device, device_metrics} <- metrics do
-      for {type, value} <- device_metrics do
-        medida = %{
-          terminal: client_id,
-          timestamp: timestamp,
-          device: device,
-          type: type,
-          value: value
-        }
-
-        IO.puts("MEDIDA: #{inspect(medida)}")
-
-        sql = """
-        INSERT INTO metrics (uid, timestamp, type, value, terminal, device, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6, $7);
-        """
-
-        uid = Enum.random(0..1_111_111_111) |> to_string()
-        {:ok, timestamp} = NaiveDateTime.from_iso8601(timestamp)
-        timestamp = DateTime.from_naive!(timestamp, "Etc/UTC")
-        Postgrex.query!(:postgres, sql, [uid, timestamp, type, value, client_id, device, %{}])
-      end
+      DataStore.Db.insert_metric(metric)
     end
   end
 end
